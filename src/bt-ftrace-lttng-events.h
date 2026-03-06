@@ -35,5 +35,9 @@ uint64_t lttng_get_field_val_from_event_unsigned(const struct tep_event *event,
 int64_t lttng_get_field_val_from_event_signed(const struct tep_event *event,
 											  const char *field_name,
 											  int64_t val);
+const int event_system_is(const char *name, const struct tep_event *event);
+
+const char *lttng_get_common_field_name_from_event(const struct tep_event *event,
+											const char *field_name);
 
 #endif
