@@ -33,10 +33,41 @@ static const char *lttng_field_name_replace_pid_by_tid(const char *field_name)
 	return outbuf;
 }
 
+static const char *lttng_field_name_replace_common_pid_with_tid(const char *field_name)
+{
+	if(!field_name) 
+		return NULL;
+	if(strncmp(field_name, "common_pid", strlen("common_pid"))==0)
+		return "tid";
+	
+	return field_name;
+}
+
+static const char *ftrace_field_name_replace_common_pid_with_pid(const char *field_name)
+{
+	if(!field_name) 
+		return NULL;
+	if(strncmp(field_name, "common_pid", strlen("common_pid"))==0)
+		return "pid";
+	
+	return field_name;
+}
+
 const char *event_prefix_name(const char *prefix, const struct tep_event *event)
 {
 	static char outbuf[64];
 	snprintf(outbuf, sizeof(outbuf) - 1, "%s%s", prefix, event->name);
+	return outbuf;
+}
+
+const char *event_syscall_prefix_name(const char *prefix, const struct tep_event *event)
+{
+	static char outbuf[64];
+	if (strlen(event->name) <= 4) {
+		return event->name;
+	}
+	const char *event_name= event->name + 4;
+	snprintf(outbuf, sizeof(outbuf) - 1, "%s%s", prefix, event_name);
 	return outbuf;
 }
 
@@ -53,6 +84,9 @@ const char *lttng_get_event_name_from_event(const struct tep_event *event)
 	} else if (event_system_is("console", event) &&
 			   !event_has_prefix("console_", event)) {
 		return event_prefix_name("console_", event);
+	}else if (event_system_is("syscalls", event) &&
+			   !event_has_prefix("syscall_", event)) {
+		return event_syscall_prefix_name("syscall_", event);
 	}
 	return event->name;
 }
@@ -61,6 +95,18 @@ const char *lttng_get_field_name_from_event(const struct tep_event *event,
 											const char *field_name)
 {
 	return lttng_field_name_replace_pid_by_tid(field_name);
+}
+
+const char *lttng_get_common_field_name_from_event(const struct tep_event *event,
+											const char *field_name)
+{
+	return lttng_field_name_replace_common_pid_with_tid(field_name);
+}
+
+const char *ftrace_get_common_field_name_from_event(const struct tep_event *event,
+											const char *field_name)
+{
+	return ftrace_field_name_replace_common_pid_with_pid(field_name);
 }
 
 uint64_t lttng_get_field_val_from_event_unsigned(const struct tep_event *event,

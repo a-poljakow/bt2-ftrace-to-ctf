@@ -23,6 +23,12 @@ const char *lttng_get_event_name_from_event(const struct tep_event *event);
 const char *lttng_get_field_name_from_event(const struct tep_event *event,
 											const char *field_name);
 
+const char *lttng_get_common_field_name_from_event(const struct tep_event *event,
+											const char *field_name);
+
+const char *ftrace_get_common_field_name_from_event(const struct tep_event *event,
+											const char *field_name);
+											
 /**
  * Some event values are different on LTTng and the kernel trace. Examples are
  * the prio fields, whereby LTTng's priorities refer to the ones observed from

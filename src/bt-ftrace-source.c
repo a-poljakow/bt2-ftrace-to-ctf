@@ -262,6 +262,34 @@ static bt_event_class *create_event_class(bt_stream_class *stream_class,
 	}
 	free(fields);
 
+	fields = tep_event_common_fields(event);
+	for(int j=0; fields[j];j++){
+		const char *field_name;
+		if (strcmp(fields[j]->name, "common_pid") != 0)
+			continue;
+		
+		if (ftrace_in->lttng_format){
+			field_name = lttng_get_common_field_name_from_event(event, fields[j]->name);
+		} else {
+			field_name = ftrace_get_common_field_name_from_event(event, fields[j]->name);
+		}
+		field_class =create_event_field_class(trace_class, fields[j], ftrace_in);
+		if (!field_class)
+			continue;
+
+		if (bt_field_class_structure_borrow_member_by_name(payload_field_class,
+														field_name)) {
+			BT_FTRACE_LOG_WARNING(loglvl,
+								"   skip duplicated field %s, type: %s on %s",
+								field_name, fields[j]->type, NAME_BUF);
+		} else {
+			bt_field_class_structure_append_member(payload_field_class,
+													field_name, field_class);
+		}
+		bt_field_class_put_ref(field_class);
+	}
+	free(fields);
+
 	/* Set the event class's payload field class */
 	bt_event_class_set_payload_field_class(event_class, payload_field_class);
 
@@ -770,6 +798,34 @@ set_message_field_value(struct ftrace_in_message_iterator *ftrace_in_iter,
 	}
 }
 
+static void
+set_message_field_value_from_val(struct ftrace_in_message_iterator *ftrace_in_iter,
+                                  struct tep_format_field *field,
+                                  const char *field_name,
+                                  bt_field *data_field,
+                                  const bt_field_class *data_class,
+                                  bt_field_class_type data_class_type,
+                                  unsigned long long val)
+{
+    if (bt_field_class_type_is(data_class_type, BT_FIELD_CLASS_TYPE_STRING)) {
+    } else if (bt_field_class_type_is(data_class_type,
+                                       BT_FIELD_CLASS_TYPE_SIGNED_INTEGER)) {
+        int64_t typed_val = convert_to_signed(
+            val, bt_field_class_integer_get_field_value_range(data_class));
+        if (ftrace_in_iter->ftrace_in->lttng_format)
+            typed_val = lttng_get_field_val_from_event_signed(
+                field->event, field_name, typed_val);
+        bt_field_integer_signed_set_value(data_field, typed_val);
+    } else if (bt_field_class_type_is(data_class_type,
+                                       BT_FIELD_CLASS_TYPE_UNSIGNED_INTEGER)) {
+        uint64_t typed_val = (uint64_t)val;
+        if (ftrace_in_iter->ftrace_in->lttng_format)
+            typed_val = lttng_get_field_val_from_event_unsigned(
+                field->event, field_name, typed_val);
+        bt_field_integer_unsigned_set_value(data_field, typed_val);
+    }
+}
+
 static void set_message_field(struct ftrace_in_message_iterator *ftrace_in_iter,
 							  struct tep_event *trace_event,
 							  struct tep_record *rec,
@@ -784,9 +840,17 @@ static void set_message_field(struct ftrace_in_message_iterator *ftrace_in_iter,
 	uint8_t *data_raw = NULL;
 
 	if (lttng) {
-		field_name = lttng_get_field_name_from_event(trace_event, field->name);
+		if (strcmp(field->name, "common_pid") == 0) {
+			field_name = lttng_get_common_field_name_from_event(trace_event, field->name);
+		} else {
+			field_name = lttng_get_field_name_from_event(trace_event, field->name);
+		}
 	} else {
-		field_name = field->name;
+		if (strcmp(field->name, "common_pid") == 0) {
+			field_name = ftrace_get_common_field_name_from_event(trace_event, field->name);
+		}else {
+			field_name = field->name;
+		}
 	}
 
 	data_field = bt_field_structure_borrow_member_field_by_name(payload_field,
@@ -825,10 +889,22 @@ static void set_message_field(struct ftrace_in_message_iterator *ftrace_in_iter,
 		event_set_symbolic_field(field->event, rec, &ftrace_in_iter->seq,
 								 data_field, field->name);
 	} else {
-		data_raw =
-			tep_get_field_raw(NULL, trace_event, field->name, rec, &len, 0);
-		set_message_field_value(ftrace_in_iter, field, field_name, data_field,
-								data_class, data_class_type, data_raw, len);
+		if(strcmp(field->name, "common_pid") == 0) {
+			unsigned long long val = 0;
+			int ret = tep_get_common_field_val(NULL, trace_event, field->name, rec, &val, 0);
+			if (ret < 0) {
+				fprintf(stderr, "Warning: could not read common field '%s'\n", field->name);
+			} else {
+				set_message_field_value_from_val(ftrace_in_iter, field, field_name,
+												data_field, data_class,
+												data_class_type, val);
+			}
+		}else {
+			data_raw =
+				tep_get_field_raw(NULL, trace_event, field->name, rec, &len, 0);
+			set_message_field_value(ftrace_in_iter, field, field_name, data_field,
+									data_class, data_class_type, data_raw, len);
+		}
 	}
 }
 
@@ -940,6 +1016,16 @@ create_message_from_event(struct ftrace_in_message_iterator *ftrace_in_iter,
 	for (int j = 0; fields[j]; j++) {
 		set_message_field(ftrace_in_iter, trace_event, rec, fields[j],
 						  payload_field);
+	}
+	free(fields);
+	
+	fields = tep_event_common_fields(trace_event);
+	for (int j = 0; fields[j]; j++) {
+		if (strcmp(fields[j]->name, "common_pid") != 0)
+			continue;
+		
+		set_message_field(ftrace_in_iter, trace_event, rec, fields[j],
+							  payload_field);
 	}
 	free(fields);
 
