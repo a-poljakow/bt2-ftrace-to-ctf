@@ -61,6 +61,8 @@
 
 #define NS_PER_S (1000 * 1000 * 1000)
 
+#define STACK_DEPTH 8
+
 /* ports private data */
 struct port_in {
 	int cpu_id;
@@ -220,6 +222,39 @@ static void append_common_context_fields(bt_trace_class *trace_class,
 	bt_field_class_structure_append_member(context_field_class, "latency",
 										   field_class);
 	bt_field_class_put_ref(field_class);
+
+	/* kernel stack */
+	{
+        bt_field_class *elem_class =
+            bt_field_class_integer_unsigned_create(trace_class);
+        bt_field_class_integer_set_field_value_range(elem_class, 64);
+        bt_field_class_integer_set_preferred_display_base(
+            elem_class,
+            BT_FIELD_CLASS_INTEGER_PREFERRED_DISPLAY_BASE_HEXADECIMAL);
+        field_class = bt_field_class_array_static_create(
+            trace_class, elem_class, STACK_DEPTH);
+        bt_field_class_put_ref(elem_class);
+        bt_field_class_structure_append_member(context_field_class,
+                                               "kernel_stack", field_class);
+        bt_field_class_put_ref(field_class);
+    }
+
+	/* user stack */
+	{
+        bt_field_class *elem_class =
+            bt_field_class_integer_unsigned_create(trace_class);
+        bt_field_class_integer_set_field_value_range(elem_class, 64);
+        bt_field_class_integer_set_preferred_display_base(
+            elem_class,
+            BT_FIELD_CLASS_INTEGER_PREFERRED_DISPLAY_BASE_HEXADECIMAL);
+        field_class = bt_field_class_array_static_create(
+            trace_class, elem_class, STACK_DEPTH);
+        bt_field_class_put_ref(elem_class);
+        bt_field_class_structure_append_member(context_field_class,
+                                               "user_stack", field_class);
+        bt_field_class_put_ref(field_class);
+    }
+
 }
 
 /*
@@ -727,6 +762,14 @@ struct ftrace_in_message_iterator {
 	struct tep_record *rec;
 	unsigned long long last_rec_ts;
 
+	/* saved stack */
+	struct {
+        uint64_t *kernel_stack;
+        int       klen;
+        uint64_t *user_stack;
+        int       ulen;
+    } pending_stack;
+
 	/* trace sequence buffer */
 	struct trace_seq seq;
 
@@ -871,6 +914,46 @@ set_message_common_fields(struct ftrace_in_message_iterator *ftrace_in_iter,
 	tep_print_event(trace_event->tep, seq, rec, "%s", TEP_PRINT_LATENCY);
 	trace_seq_terminate(seq);
 	bt_field_string_set_value(data_field, seq->buffer);
+
+	/* kernel stack */
+	{
+        bt_field *karr_field =
+            bt_field_structure_borrow_member_field_by_name(context_field,
+                                                           "kernel_stack");
+        const int klen = ftrace_in_iter->pending_stack.klen;
+        for (int i = 0; i < STACK_DEPTH; i++) {
+            bt_field *elem =
+                bt_field_array_borrow_element_field_by_index(karr_field, i);
+            uint64_t val =
+                (ftrace_in_iter->pending_stack.kernel_stack && i < klen)
+                    ? ftrace_in_iter->pending_stack.kernel_stack[i]
+                    : 0;
+            bt_field_integer_unsigned_set_value(elem, val);
+        }
+    }
+
+	/* user stack */
+	{
+        bt_field *uarr_field =
+            bt_field_structure_borrow_member_field_by_name(context_field,
+                                                           "user_stack");
+        const int ulen = ftrace_in_iter->pending_stack.ulen;
+        for (int i = 0; i < STACK_DEPTH; i++) {
+            bt_field *elem =
+                bt_field_array_borrow_element_field_by_index(uarr_field, i);
+            uint64_t val =
+                (ftrace_in_iter->pending_stack.user_stack && i < ulen)
+                    ? ftrace_in_iter->pending_stack.user_stack[i]
+                    : 0;
+            bt_field_integer_unsigned_set_value(elem, val);
+        }
+    }
+
+	/* clear pending stack for next event */
+	ftrace_in_iter->pending_stack.kernel_stack = NULL;
+    ftrace_in_iter->pending_stack.klen         = 0;
+    ftrace_in_iter->pending_stack.user_stack   = NULL;
+    ftrace_in_iter->pending_stack.ulen         = 0;
 }
 
 static void set_message_field(struct ftrace_in_message_iterator *ftrace_in_iter,
@@ -1023,6 +1106,50 @@ create_message_from_event(struct ftrace_in_message_iterator *ftrace_in_iter,
 		goto done;
 	}
 
+	if (strcmp(trace_event->name, "kernel_stack") == 0) {
+        int len = 0;
+        uint64_t *stack_data = (uint64_t *)tep_get_field_raw(
+            NULL, trace_event, "caller", rec, &len, 0);
+        ftrace_in_iter->pending_stack.kernel_stack = stack_data;
+        ftrace_in_iter->pending_stack.klen =
+            (stack_data && len > 0)
+                ? MIN(len / (int)sizeof(uint64_t), STACK_DEPTH)
+                : 0;
+
+        ftrace_in_iter->last_rec_ts = rec->ts;
+        tracecmd_free_record(rec);
+        ftrace_in_iter->rec = tracecmd_read_data(
+            ftrace_in_iter->port_data->tc_input,
+            ftrace_in_iter->port_data->cpu_id);
+        if (supports_discarded_events && ftrace_in_iter->rec) {
+            ftrace_in_iter->events_discarded =
+                ftrace_in_iter->rec->missed_events;
+        }
+        return NULL;
+    }
+
+    if (strcmp(trace_event->name, "user_stack") == 0) {
+        int len = 0;
+        uint64_t *stack_data = (uint64_t *)tep_get_field_raw(
+            NULL, trace_event, "caller", rec, &len, 0);
+        ftrace_in_iter->pending_stack.user_stack = stack_data;
+        ftrace_in_iter->pending_stack.ulen =
+            (stack_data && len > 0)
+                ? MIN(len / (int)sizeof(uint64_t), STACK_DEPTH)
+                : 0;
+
+        ftrace_in_iter->last_rec_ts = rec->ts;
+        tracecmd_free_record(rec);
+        ftrace_in_iter->rec = tracecmd_read_data(
+            ftrace_in_iter->port_data->tc_input,
+            ftrace_in_iter->port_data->cpu_id);
+        if (supports_discarded_events && ftrace_in_iter->rec) {
+            ftrace_in_iter->events_discarded =
+                ftrace_in_iter->rec->missed_events;
+        }
+        return NULL;
+    }
+
 	struct bt_event_class *event_class =
 		g_hash_table_lookup(ftrace_in_iter->ftrace_in->event_classes,
 							(gconstpointer)((uintptr_t)trace_event->id));
@@ -1095,10 +1222,11 @@ ftrace_in_message_iterator_next(bt_self_message_iterator *self_message_iterator,
 			create_message_from_event(ftrace_in_iter, self_message_iterator);
 		if (message) {
 			messages[i++] = message;
-		} else {
-			status = BT_MESSAGE_ITERATOR_CLASS_NEXT_METHOD_STATUS_END;
-			break;
-		}
+		} else if (ftrace_in_iter->state ==
+                   FTRACE_IN_MESSAGE_ITERATOR_STATE_ENDED) {
+            status = BT_MESSAGE_ITERATOR_CLASS_NEXT_METHOD_STATUS_END;
+            break;
+        }
 	} while (i < capacity);
 
 	if (i > 0) {
