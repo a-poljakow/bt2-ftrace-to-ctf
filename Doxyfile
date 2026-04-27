@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: (C) 2026 Siemens AG
+# SPDX-License-Identifier: MIT
+
+PROJECT_NAME           = "bt2-ftrace-to-ctf"
+OUTPUT_DIRECTORY       = ./docs
+MULTILINE_CPP_IS_BRIEF = YES
+OPTIMIZE_OUTPUT_FOR_C  = YES
+EXTRACT_ALL            = YES
+EXTRACT_PRIVATE        = YES
+EXTRACT_PRIV_VIRTUAL   = YES
+EXTRACT_PACKAGE        = YES
+EXTRACT_STATIC         = YES
+EXTRACT_LOCAL_METHODS  = YES
+CASE_SENSE_NAMES       = YES
+INPUT                  = ./src/ README.md ./tests/
+EXCLUDE                = ./tests/testtraces.tar.gz
+USE_MDFILE_AS_MAINPAGE = README.md
+HTML_TIMESTAMP         = YES
+GENERATE_LATEX         = NO
