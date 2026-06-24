@@ -1,5 +1,5 @@
-\ SPDX-FileCopyrightText: (C) 2025 Siemens
-\ SPDX-License-Identifier: MIT
+.\" SPDX-FileCopyrightText: (C) 2025 Siemens
+.\" SPDX-License-Identifier: MIT
 .TH ftrace-to-ctf 1 "December 2025" "ftrace-to-ctf @VERSION@" "User Commands"
 .SH NAME
 ftrace-to-ctf \- Convert ftrace trace data (trace.dat) to CTF format
