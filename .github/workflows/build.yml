@@ -11,7 +11,7 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Sets permissions of the GITHUB_TOKEN to checkout the repository
+    # Sets permissions of the GITHUB_TOKEN to checkout the repository
 permissions:
   contents: read
 
@@ -33,14 +33,13 @@ jobs:
         run: |
           reuse lint
 
-  build:
+  build-and-test:
     runs-on: ubuntu-24.04
     needs: generate-trace-data
     strategy:
       matrix:
-        distro:
-          ["debian:bookworm", "debian:trixie", "debian:forky", "ubuntu:noble"]
-        meson_opts: ["-Dtracecmd-internals=false", "-Dtracecmd-internals=true"]
+        distro: [ "debian:bookworm", "debian:trixie", "debian:forky", "ubuntu:noble" ]
+        meson_opts: [ "-Dtracecmd-internals=false", "-Dtracecmd-internals=true" ]
     container: ${{ matrix.distro }}
     steps:
       - name: checkout repository
@@ -60,7 +59,12 @@ jobs:
             libtracecmd-dev \
             libtracefs-dev \
             libglib2.0-dev \
-            libjson-glib-dev
+            libjson-glib-dev \
+            python3 \
+            python3-bt2 \
+            python3-pytest \
+            libcmocka-dev \
+            lcov
           # Install meson, using backports for Debian bookworm
           if [[ "${{ matrix.distro }}" == "debian:bookworm" ]]; then
             # Add backports repository for Debian bookworm
@@ -85,7 +89,7 @@ jobs:
         run: ninja -C build clang-tidy
 
       - name: download sample trace data
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           name: trace-data
 
@@ -113,24 +117,67 @@ jobs:
           BABELTRACE_PLUGIN_PATH: ${{ github.workspace }}/build
         run: ./build/ftrace-to-ctf --lttng trace.dat /tmp
 
+      - name: Build with coverage enabled
+        run: |
+          meson setup --wipe \
+            --buildtype=debug \
+            -Db_coverage=true \
+            build_coverage
+          ninja -C build_coverage
+      - name: Run unit tests
+        continue-on-error: true
+        run: meson test -C build_coverage --print-errorlogs --suite ftrace-to-ctf
+      
+      - name: build with sanitizers
+        run: |
+          meson setup -Db_sanitize=address,undefined -Dbuildtype=debug build_asan
+          ninja -C build_asan
+      - name: Execute dynamic smoke tests
+        env:
+          BABELTRACE_PLUGIN_PATH: ${{ github.workspace }}/build_asan
+          ASAN_OPTIONS: "detect_leaks=1:halt_on_error=1:print_stack_trace=1:malloc_context_size=30:leak_check_at_exit=1"
+          UBSAN_OPTIONS: "halt_on_error=0:print_stack_trace=1"
+          LD_PRELOAD: /usr/lib/x86_64-linux-gnu/libasan.so.8
+        run: |
+          ./build_asan/ftrace-to-ctf --lttng trace.dat /tmp/
+
+      - name: Integration test (conversion + validation)
+        run: |
+          mkdir -p converted
+          export BABELTRACE_PLUGIN_PATH=${{ github.workspace }}/build
+          ./build/ftrace-to-ctf --lttng trace.full.dat lttng/ust/uid/0/64-bit/ converted
+          python3 -m pytest tests/test.py --trace-path converted -v
+
   generate-trace-data:
     runs-on: ubuntu-24.04
     steps:
       - name: install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y trace-cmd
+          sudo apt-get install -y trace-cmd python3 babeltrace2 lttng-tools lttng-modules-dkms liblttng-ust-dev
 
       - name: generate trace.dat sample data
         run: |
           sudo trace-cmd record -C mono -e "sched:*" sleep 1
           sudo trace-cmd record -C mono -T -e "sched:sched_switch" -o trace.stack.dat sleep 1
           sudo trace-cmd record -C mono -e sched -B block -e block -B time -e timer -o trace.sub.dat sleep 1
+          mkdir -p lttng
+          # run trace-cmd with a simple python script that triggers itimer events to be recorded
+          sudo trace-cmd record -o trace.full.dat -C mono -e "*" python3 -c 'import signal, time; signal.setitimer(signal.ITIMER_REAL, 0.1); time.sleep(0.5)' sleep 10
+          lttng create my_session --output=lttng
+          lttng enable-event --userspace --all
+          lttng start
+          # run ls with LD_PRELOAD to trigger lttng-ust-libc-wrapper.so
+          LD_PRELOAD=liblttng-ust-libc-wrapper.so ls -R /usr/bin
+          lttng stop
+          lttng destroy
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: trace-data
           path: |
             trace.dat
             trace.stack.dat
             trace.sub.dat
+            trace.full.dat
+            lttng
